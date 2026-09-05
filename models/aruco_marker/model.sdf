@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <model name="aruco_marker">
+
+    <!-- static: the plate is scenery, not something physics pushes around.
+         It can still be teleported with the world's set_pose service, which
+         is how it will be made to move later. -->
+    <static>true</static>
+
+    <link name="marker_link">
+
+      <!-- Structure follows PX4's own arucotag model, which is known to render
+           correctly on this Gazebo build. A <plane> is used rather than a <box>
+           because Gazebo's plane primitive carries usable UV coordinates; the
+           box primitive does not, so a texture on a box renders as base colour.
+
+           0.2667 m square because the texture is 3/4 marker and 1/4 quiet zone:
+           0.2667 * 0.75 = 0.200 m of actual marker. 0.200 m is the number pose
+           estimation uses. -->
+      <visual name="marker_visual">
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>0.2667 0.2667</size>
+          </plane>
+        </geometry>
+        <material>
+          <!-- diffuse is white on purpose: it is the base colour the texture
+               modulates. Leave it out and the default is black, so any texture
+               problem shows up as an invisible black square instead of a
+               visible white one. -->
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0.4 0.4 0.4 1</specular>
+          <pbr>
+            <metal>
+              <!-- model:// URI, not an absolute path. Gazebo resolves it by
+                   searching each directory on GZ_SIM_RESOURCE_PATH for one
+                   named aruco_marker, so that variable must point at
+                   corvid/models — the parent of this model's folder. Keeps the
+                   model working wherever the repo is checked out or mounted. -->
+              <albedo_map>model://aruco_marker/materials/textures/aruco_4x4_id0.png</albedo_map>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+
+      <!-- No collision element on purpose. The marker is a sheet of paper on
+           the floor; collision geometry would only give the drone something to
+           catch on during landing tests. -->
+
+    </link>
+  </model>
+</sdf>

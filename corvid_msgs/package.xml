@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>corvid_msgs</name>
+  <version>0.0.1</version>
+  <description>
+    Message definitions for corvid, an aerial-guided ground swarm for
+    cooperative search and retrieval.
+  </description>
+  <maintainer email="ouri200425@gmail.com">Anshul Kumar Paliwal</maintainer>
+  <license>MIT</license>
+
+  <!-- ament_cmake is the build system; rosidl_default_generators is what
+       turns the .msg files into Python and C++ types at build time. -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <!-- Packages whose types appear inside our messages. -->
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+
+  <!-- The support library the generated types need at runtime. -->
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <!-- Declares this package as one that defines interfaces. Without it the
+       generated types are not discoverable by packages that depend on us. -->
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
