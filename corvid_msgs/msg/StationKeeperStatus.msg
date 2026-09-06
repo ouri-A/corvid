@@ -38,10 +38,31 @@ bool commanding
 # zero even when tracking perfectly -- around 0.1 s is normal.
 float32 marker_age_s
 
-# Where the marker is, in the body frame, in metres. Forward and left, from the
-# hardcoded optical-to-body rotation. This is the controller's error signal.
+# Where the marker is, in metres, forward and left of the drone. This is the
+# controller's error signal.
+#
+# The frame is the LEVEL body frame: the drone's own heading, with roll and
+# pitch taken out using the attitude below. It is not the raw optical-to-body
+# result. A tilted camera projects a marker on the ground to a false offset of
+# about height x tan(tilt) -- measured at 19 cm at 3-5 degrees from 2.3 m --
+# and removing the tilt is what makes these numbers mean what they say.
 float32 offset_forward_m
 float32 offset_left_m
+
+# The attitude that was taken out, degrees, from the sample nearest the source
+# image's own timestamp -- NOT the newest attitude at the time of the tick.
+# With around 0.18 s of pipeline latency and tilt rates near 10 deg/s, the
+# newest attitude is not the attitude the picture was taken at.
+#
+# NaN if no attitude was available for that instant, in which case the offsets
+# above are raw, commanding is false, and nothing was flown on them.
+float32 roll_deg
+float32 pitch_deg
+
+# Source image stamp minus the attitude sample's stamp, seconds. How well the
+# two were actually matched, rather than how well they were assumed to be.
+# Positive means the attitude sample is older than the image. NaN if none.
+float32 attitude_age_s
 
 # The proportional and integral contributions, separately, in m/s. Split so a
 # flight flown with a nonzero ki can be read without re-deriving which part of

@@ -38,6 +38,31 @@ body-frame velocity setpoint in the uORB interface. So there is a second
 rotation, by the vehicle's yaw, purely to speak PX4's language. That is what the
 VehicleLocalPosition subscription is for - that, and z for altitude.
 
+Between those two there is a third rotation, and leaving it out was a real bug.
+The camera is bolted to the airframe, so optical-to-body is genuinely constant
+and attitude has nothing to do with it. What is NOT constant is the step after:
+rotating by yaw alone quietly asserts that roll and pitch are zero, and they are
+not. A tilted camera projects a marker on the ground to a false offset of about
+height x tan(tilt). Measured against Gazebo ground truth: 1.2 cm below 2 degrees
+of tilt, 19.0 cm at 3-5 degrees, 26.7 cm above 5 degrees, from 2.3 m. So the
+body-frame vector is levelled first - roll and pitch removed, the drone's own
+heading kept - and only then does the yaw rotation touch it.
+
+ArduPilot names this exact choice. AC_PrecLand branches on the frame a
+measurement arrived in: BODY_FRD gets the full attitude, LOCAL_FRD gets yaw
+only, and which is correct depends entirely on whether the sensor already
+reports in a stabilised frame. Ours does not. PX4's own landing_target_estimator
+does not offer the choice - it rotates the sensor ray by the full attitude
+quaternion, always. It goes further up than the autopilots, too: the MAVLink
+LANDING_TARGET message carries a frame field for precisely this, and PX4 accepts
+only MAV_FRAME_LOCAL_NED, which is the protocol saying that resolving attitude
+before you send anything is the companion computer's job.
+
+The attitude used is the one nearest the source image's own timestamp, not the
+newest one on hand. At around 0.18 s of pipeline latency and tilt rates near
+10 deg/s, the newest attitude is not the attitude the picture was taken at, and
+using it would put back a good part of what the correction just removed.
+
 Height never comes from vision. Range from a marker is depth from apparent size
 and is the fragile half of the pose - 3.2% at hover - so the marker sets where
 to be, and PX4 sets how high.
@@ -74,10 +99,16 @@ this is right.
 """
 
 import math
+from collections import deque
 
 import rclpy
 from corvid_msgs.msg import MarkerDetectionArray, StationKeeperStatus
-from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleLocalPosition
+from px4_msgs.msg import (
+    OffboardControlMode,
+    TrajectorySetpoint,
+    VehicleAttitude,
+    VehicleLocalPosition,
+)
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -116,6 +147,82 @@ from rclpy.qos import (
 def optical_to_body_flu(x_opt, y_opt, z_opt):
     """Return (forward, left, up) in metres, given a point in the optical frame."""
     return -y_opt, -x_opt, -z_opt
+
+
+# How far apart an image stamp and an attitude stamp may be before the pair is
+# refused. Attitude arrives from PX4 at ~80 Hz, so 12.5 ms between samples; 50 ms
+# allows a few dropped messages and still keeps the interpolation error small
+# against 10 deg/s of tilt rate. Beyond this the honest answer is that we do not
+# know how the drone was oriented when the picture was taken.
+ATTITUDE_MATCH_TOLERANCE_S = 0.05
+
+# Attitude samples kept. At ~80 Hz this is about 1.6 s of history, comfortably
+# more than the 0.5 s marker timeout, so a detection can never be older than the
+# buffer.
+ATTITUDE_BUFFER_LEN = 128
+
+
+def yaw_from_quaternion(w, x, y, z):
+    """Yaw about the down axis, radians, from a body-FRD-to-NED quaternion."""
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def roll_pitch_from_quaternion(w, x, y, z):
+    """Roll and pitch, radians, from a body-FRD-to-NED quaternion. Diagnostic only."""
+    roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+    # Clamped before the asin because a quaternion that is a hair off unit
+    # length can push this just past 1.0 and raise ValueError, which would take
+    # the node down mid-flight over a rounding error.
+    sin_pitch = max(-1.0, min(1.0, 2.0 * (w * y - z * x)))
+    return roll, math.asin(sin_pitch)
+
+
+def rotate_frd_to_ned(w, x, y, z, vx, vy, vz):
+    """Rotate a body-FRD vector into NED by the attitude quaternion."""
+    # v' = v + w*t + (u x t), where u is the vector part and t = 2(u x v). This
+    # is the standard quaternion rotation written without building a 3x3 matrix,
+    # which is deliberate: a hand-written DCM is nine terms and the usual way to
+    # get one wrong is to transpose it, which produces a plausible-looking
+    # rotation in the wrong direction. Two cross products cannot be transposed.
+    tx = 2.0 * (y * vz - z * vy)
+    ty = 2.0 * (z * vx - x * vz)
+    tz = 2.0 * (x * vy - y * vx)
+    return (
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx),
+    )
+
+
+def level_body_flu(forward, left, up, w, x, y, z):
+    """Take roll and pitch out of a body-frame vector, keeping the drone's heading.
+
+    In: an FLU vector in the true, tilted body frame, plus the attitude
+    quaternion for the instant it was measured. Out: the same vector in the
+    level body frame - still forward-and-left of the drone, but as if the
+    airframe were flat, which is what the yaw rotation downstream assumes.
+    """
+    # Rotate all the way into NED with the full attitude, then take the yaw back
+    # out. That is R_yaw' * R, which is the tilt on its own, but computed without
+    # ever forming a matrix product. The yaw removed here is derived from this
+    # same quaternion rather than from VehicleLocalPosition.heading, so the
+    # removal is exact even if the two ever disagree.
+    #
+    # It looks wasteful to rotate by yaw here and by yaw again downstream. It is
+    # not the same yaw: this one is the attitude sample's, from when the image
+    # was taken, and the downstream one is the vehicle's now. Collapsing them
+    # would silently reintroduce the latency this is built to avoid.
+    n_north, n_east, n_down = rotate_frd_to_ned(w, x, y, z, forward, -left, -up)
+
+    yaw = yaw_from_quaternion(w, x, y, z)
+    cos_yaw = math.cos(yaw)
+    sin_yaw = math.sin(yaw)
+
+    level_forward = n_north * cos_yaw + n_east * sin_yaw
+    level_right = -n_north * sin_yaw + n_east * cos_yaw
+
+    # Back to FLU. Right and down both flip.
+    return level_forward, -level_right, -n_down
 
 
 class StationKeeper(Node):
@@ -236,6 +343,30 @@ class StationKeeper(Node):
         self._offset_left_m = None
         self._offset_stamp_s = None
 
+        # True if the stored offset had roll and pitch taken out of it. False
+        # means an attitude sample for that instant could not be found and the
+        # offset is raw - it is kept and published so the bag shows what was
+        # seen, but it is not flown on.
+        self._offset_levelled = False
+
+        # The attitude that was removed, and how well it was matched to the
+        # image. Diagnostic; None until a levelled detection has arrived.
+        self._offset_roll_rad = None
+        self._offset_pitch_rad = None
+        self._offset_attitude_age_s = None
+
+        # Attitude history, oldest first, as (receive_time_s, w, x, y, z).
+        #
+        # Timed on the NODE'S clock at the moment the message arrived, NOT on
+        # msg.timestamp. PX4's uORB timestamps are microseconds since the flight
+        # controller booted, which is a different epoch from anything ROS knows
+        # about - matching an image stamp against one would be meaningless
+        # arithmetic that produces a number anyway. Receive time is on the same
+        # clock the image header is on, and attitude comes straight off the
+        # uXRCE-DDS link with none of the image pipeline's latency in front of
+        # it, so the two are directly comparable.
+        self._attitude_buffer = deque(maxlen=ATTITUDE_BUFFER_LEN)
+
         # Integral accumulators, in metre-seconds. Separate per axis.
         self._integral_forward = 0.0
         self._integral_left = 0.0
@@ -288,6 +419,24 @@ class StationKeeper(Node):
             VehicleLocalPosition,
             '/fmu/out/vehicle_local_position',
             self._on_local_position,
+            px4_qos,
+        )
+
+        # Attitude, to take the tilt out of the marker offset. Same QoS and the
+        # same reason as above.
+        #
+        # This subscription is only as good as PX4's horizon calibration. On an
+        # uncalibrated airframe PX4 reported 2.37 degrees of tilt while Gazebo
+        # ground truth said 0.09, and feeding that in made the offset WORSE than
+        # assuming level - 10.4 cm of standing error against 0.5 cm, which is
+        # 2.3 m x tan(2.37 deg) and no coincidence. QGC's Level Horizon
+        # Calibration removed it; PX4 and truth then agreed to 0.03 degrees.
+        # If a flight ever shows a standing offset that scales with height,
+        # check this before touching a gain.
+        self._attitude_sub = self.create_subscription(
+            VehicleAttitude,
+            '/fmu/out/vehicle_attitude',
+            self._on_attitude,
             px4_qos,
         )
 
@@ -352,6 +501,35 @@ class StationKeeper(Node):
         # Logged, never acted on. See the note where it is stored.
         self._dist_bottom_m = msg.dist_bottom if msg.dist_bottom_valid else None
 
+    def _on_attitude(self, msg):
+        """Keep a short history of attitude, timestamped on arrival."""
+        # q is (w, x, y, z), body FRD to NED. Stored rather than used because
+        # the detection that needs it has not arrived yet - it is still in the
+        # camera pipeline, about 0.18 s behind.
+        self._attitude_buffer.append(
+            (
+                self.get_clock().now().nanoseconds * 1e-9,
+                float(msg.q[0]),
+                float(msg.q[1]),
+                float(msg.q[2]),
+                float(msg.q[3]),
+            )
+        )
+
+    def _attitude_at(self, stamp_s):
+        """The attitude sample nearest stamp_s, or None if nothing is close enough."""
+        if not self._attitude_buffer:
+            return None
+
+        # Nearest, not newest, and not interpolated. Nearest is within ~6 ms of
+        # the truth at 80 Hz, which is under a tenth of a degree at the tilt
+        # rates seen; slerping between two samples would be more code for less
+        # than the measurement noise.
+        nearest = min(self._attitude_buffer, key=lambda s: abs(s[0] - stamp_s))
+        if abs(nearest[0] - stamp_s) > ATTITUDE_MATCH_TOLERANCE_S:
+            return None
+        return nearest
+
     def _on_detections(self, msg):
         """Store the target marker's offset in the body frame. No commanding here."""
         # An empty array is meaningful and is NOT the same as no message: it
@@ -363,18 +541,43 @@ class StationKeeper(Node):
                 continue
 
             position = detection.pose.position
-            forward, left, _up = optical_to_body_flu(position.x, position.y, position.z)
-
-            self._offset_forward_m = forward
-            self._offset_left_m = left
+            forward, left, up = optical_to_body_flu(position.x, position.y, position.z)
 
             # The image's acquisition time, carried through from the detector -
             # not the time this callback ran. The difference is the ~106 ms of
             # pipeline staleness, and measuring age against arrival time would
             # hide exactly the quantity worth watching.
-            self._offset_stamp_s = (
-                msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-            )
+            stamp_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+
+            # The up component is needed from here on. It used to be discarded,
+            # which was fine while the frame was assumed level: only forward and
+            # left were the error signal. Levelling is a 3D rotation and the
+            # vertical component feeds the horizontal ones, so throwing it away
+            # is what made the level assumption unavoidable rather than chosen.
+            sample = self._attitude_at(stamp_s)
+            if sample is None:
+                # No attitude for that instant. Store the raw offset anyway, so
+                # a bag records what the camera saw, but mark it so the tick
+                # refuses to command on it. Flying the raw number is what the
+                # old code did and it is the thing being fixed; the alternative
+                # of silently falling back to it would make the correction
+                # invisible exactly when it failed.
+                self._offset_levelled = False
+                self._offset_roll_rad = None
+                self._offset_pitch_rad = None
+                self._offset_attitude_age_s = None
+            else:
+                attitude_t, qw, qx, qy, qz = sample
+                forward, left, up = level_body_flu(forward, left, up, qw, qx, qy, qz)
+                self._offset_levelled = True
+                self._offset_roll_rad, self._offset_pitch_rad = (
+                    roll_pitch_from_quaternion(qw, qx, qy, qz)
+                )
+                self._offset_attitude_age_s = stamp_s - attitude_t
+
+            self._offset_forward_m = forward
+            self._offset_left_m = left
+            self._offset_stamp_s = stamp_s
             return
 
     def _marker_age_s(self):
@@ -407,7 +610,19 @@ class StationKeeper(Node):
 
         age_s = self._marker_age_s()
         have_marker = age_s is not None and age_s <= self._marker_timeout_s
-        can_command = have_marker and self._heading_rad is not None
+
+        # Three conditions, not two. A marker in time, a heading to rotate the
+        # command by, and an offset that has had the tilt taken out of it. The
+        # third is new and it can only fail at startup in practice, since
+        # attitude and local position arrive over the same link at similar
+        # rates - but "in practice" is not a guarantee, and an offset that has
+        # not been levelled carries an error that scales with height and points
+        # in whatever direction the airframe happened to be leaning.
+        can_command = (
+            have_marker
+            and self._heading_rad is not None
+            and self._offset_levelled
+        )
 
         if can_command:
             v_forward, v_left, p_fwd, p_left, i_fwd, i_left = self._lateral_command()
@@ -524,6 +739,23 @@ class StationKeeper(Node):
         s.cmd_north_mps = float(v_north)
         s.cmd_east_mps = float(v_east)
 
+        # The attitude that was taken out of the offset above. NaN when there is
+        # no marker, and NaN when there is one that could not be levelled -
+        # which is the same condition that forced commanding to false, so the
+        # two always agree in the bag.
+        s.roll_deg = (
+            nan if not have_marker or self._offset_roll_rad is None
+            else math.degrees(self._offset_roll_rad)
+        )
+        s.pitch_deg = (
+            nan if not have_marker or self._offset_pitch_rad is None
+            else math.degrees(self._offset_pitch_rad)
+        )
+        s.attitude_age_s = (
+            nan if not have_marker or self._offset_attitude_age_s is None
+            else float(self._offset_attitude_age_s)
+        )
+
         s.heading_rad = nan if self._heading_rad is None else float(self._heading_rad)
         s.z_m = nan if self._z_m is None else float(self._z_m)
         s.altitude_setpoint_m = float(z_sp)
@@ -635,6 +867,14 @@ class StationKeeper(Node):
             self.get_logger().warn(
                 'no VehicleLocalPosition yet - not commanding lateral motion. '
                 'Check the uXRCE-DDS agent is running.',
+                throttle_duration_sec=5.0,
+            )
+
+        if have_marker and not self._offset_levelled:
+            self.get_logger().warn(
+                'marker seen but no attitude within %.0f ms of the image - not '
+                'commanding. Check /fmu/out/vehicle_attitude is arriving.'
+                % (ATTITUDE_MATCH_TOLERANCE_S * 1000.0),
                 throttle_duration_sec=5.0,
             )
 
