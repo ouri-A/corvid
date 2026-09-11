@@ -25,6 +25,7 @@ if [ $# -eq 0 ]; then
 fi
 
 docker run -it --rm \
+    --network host \
     -v "${CORVID_PATH}:${WS}/src/corvid" \
     -w "${WS}" \
     --name corvid-dev \
