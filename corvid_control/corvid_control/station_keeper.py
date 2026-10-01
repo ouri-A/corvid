@@ -92,10 +92,13 @@ what this node ACTUALLY decided instead of reconstructed from the marker pose,
 the heading and the gains -- a reconstruction can disagree with the node and
 give no sign that it has.
 
-STILL OPEN, and marked in the code where it lands: what the drone should do when
-the marker is lost. The placeholder here is to stop - zero lateral velocity, hold
-height - which is the least surprising thing it could do, not a decision that
-this is right.
+MARKER LOST, decided 1 Oct 2026: hold position, then land. When the marker has
+been gone longer than marker_timeout_s the drone holds a POSITION setpoint at the
+x, y it was at when the marker went, at the same height. If the marker comes back
+the loop resumes. If it is still gone lost_hover_s later, the node sends PX4 a
+land command and PX4's own Land mode takes it down. The land command is only ever
+sent while PX4 is in Offboard, so it cannot take the aircraft from a pilot flying
+it by hand.
 """
 
 import math
@@ -107,7 +110,9 @@ from px4_msgs.msg import (
     OffboardControlMode,
     TrajectorySetpoint,
     VehicleAttitude,
+    VehicleCommand,
     VehicleLocalPosition,
+    VehicleStatus,
 )
 from rclpy.node import Node
 from rclpy.qos import (
@@ -322,6 +327,14 @@ class StationKeeper(Node):
         # keeping and should not.
         self.declare_parameter('marker_timeout_s', 0.5)
 
+        # How long to hold position after the marker is declared lost before
+        # landing. Counted from the moment it is declared lost, so the land
+        # command goes out marker_timeout_s + lost_hover_s after the last
+        # detection. 5 s is a first guess: the real limit is how far optical
+        # flow drifts while the drone hovers blind, and that can only be
+        # measured on the real airframe.
+        self.declare_parameter('lost_hover_s', 5.0)
+
         # Setpoint rate. PX4's floor is 2 Hz; this is far above it so that a
         # scheduling hiccup cannot come near the limit, and it gives the control
         # law a fine, regular dt.
@@ -334,6 +347,7 @@ class StationKeeper(Node):
         self._integral_limit_mps = self.get_parameter('integral_limit_mps').value
         self._max_velocity_mps = self.get_parameter('max_velocity_mps').value
         self._marker_timeout_s = self.get_parameter('marker_timeout_s').value
+        self._lost_hover_s = self.get_parameter('lost_hover_s').value
         setpoint_rate_hz = self.get_parameter('setpoint_rate_hz').value
 
         # Latest marker offset in the body frame, and the time it was measured.
@@ -381,6 +395,28 @@ class StationKeeper(Node):
         # rangefinder the airframe must carry to hold position at all. Same
         # code, better estimate underneath it, no sim-specific branch.
         self._z_m = None
+
+        # EKF x and y, metres, local NED. Only used to hold position while the
+        # marker is lost. None while PX4 says they are not valid.
+        self._x_m = None
+        self._y_m = None
+
+        # PX4's nav_state from vehicle_status_v1. None until the first message,
+        # and None counts as NOT in Offboard, so the node never lands a vehicle
+        # whose mode it does not know.
+        self._nav_state = None
+
+        # Marker-lost bookkeeping. _lost_since_s is when the node stopped being
+        # able to command; the hold point is where the drone was at that
+        # moment. Both are None while tracking.
+        self._lost_since_s = None
+        self._hold_x_m = None
+        self._hold_y_m = None
+
+        # When the land command was last sent, so it is resent once a second
+        # rather than at 50 Hz. Commands go over a best-effort link and one can
+        # be dropped.
+        self._last_land_request_s = None
 
         # Terrain estimate. NOT used for control - kept only so the log carries
         # it and a bag can be scored against it later. Do not close a loop on
@@ -440,8 +476,20 @@ class StationKeeper(Node):
             px4_qos,
         )
 
+        # Mode, so the land command is only sent while PX4 is in Offboard.
+        # vehicle_status_v1, not vehicle_status: PX4 renamed it on this build.
+        self._status_sub = self.create_subscription(
+            VehicleStatus,
+            '/fmu/out/vehicle_status_v1',
+            self._on_vehicle_status,
+            px4_qos,
+        )
+
         self._offboard_mode_pub = self.create_publisher(
             OffboardControlMode, '/fmu/in/offboard_control_mode', px4_qos
+        )
+        self._command_pub = self.create_publisher(
+            VehicleCommand, '/fmu/in/vehicle_command', px4_qos
         )
         self._setpoint_pub = self.create_publisher(
             TrajectorySetpoint, '/fmu/in/trajectory_setpoint', px4_qos
@@ -466,7 +514,7 @@ class StationKeeper(Node):
         self.get_logger().info(
             'station keeper: marker id %d, hold %.2f m above takeoff point '
             '(position setpoint on z), kp %.3f, ki %.3f, max %.2f m/s, '
-            'timeout %.2f s, setpoints at %.1f Hz'
+            'timeout %.2f s, land after %.1f s lost, setpoints at %.1f Hz'
             % (
                 self._target_marker_id,
                 self._target_height_m,
@@ -474,6 +522,7 @@ class StationKeeper(Node):
                 self._ki,
                 self._max_velocity_mps,
                 self._marker_timeout_s,
+                self._lost_hover_s,
                 setpoint_rate_hz,
             )
         )
@@ -485,9 +534,10 @@ class StationKeeper(Node):
             )
 
         self.get_logger().info(
-            'this node does not arm and does not switch modes. Stream is '
-            'running; put the vehicle into Offboard yourself once it is '
-            'airborne and holding.'
+            'this node does not arm and never switches INTO Offboard. Stream '
+            'is running; put the vehicle into Offboard yourself once it is '
+            'airborne and holding. While in Offboard, a marker lost for '
+            '%.1f s makes it command Land.' % self._lost_hover_s
         )
 
     def _on_local_position(self, msg):
@@ -497,9 +547,17 @@ class StationKeeper(Node):
         # z_valid, not dist_bottom_valid. This is the estimator's own vertical
         # position and it is valid whenever the EKF is running at all.
         self._z_m = msg.z if msg.z_valid else None
+        if msg.xy_valid:
+            self._x_m, self._y_m = msg.x, msg.y
+        else:
+            self._x_m = self._y_m = None
 
         # Logged, never acted on. See the note where it is stored.
         self._dist_bottom_m = msg.dist_bottom if msg.dist_bottom_valid else None
+
+    def _on_vehicle_status(self, msg):
+        """Track PX4's mode."""
+        self._nav_state = msg.nav_state
 
     def _on_attitude(self, msg):
         """Keep a short history of attitude, timestamped on arrival."""
@@ -624,34 +682,49 @@ class StationKeeper(Node):
             and self._offset_levelled
         )
 
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        in_offboard = self._nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+        hold = None
+
         if can_command:
             v_forward, v_left, p_fwd, p_left, i_fwd, i_left = self._lateral_command()
+            self._lost_since_s = None
+            self._hold_x_m = self._hold_y_m = None
+            self._last_land_request_s = None
         else:
             p_fwd = p_left = i_fwd = i_left = 0.0
-            # MARKER LOST - PLACEHOLDER BEHAVIOUR, NOT A DECISION.
-            #
-            # Stop laterally and hold height. It is the least surprising thing
-            # the drone can do and it is safe, but "what should happen when the
-            # marker is lost" is still an open design question, and this is
-            # standing in for the answer. Other projects diverge sharply here:
-            # ARK aborts the flight mode outright, ArduPilot exposes a whole
-            # policy - retry a bounded number of times, then either land anyway
-            # or hover - and PX4's estimator de-initialises rather than coast.
-            # All three treat it as a policy, none as a gain.
-            #
-            # The setpoint stream deliberately continues through this. Going
-            # quiet would drop offboard and hand PX4 the aircraft, which is a
-            # far larger event than losing sight of a marker.
-            #
-            # Altitude genuinely IS held here, now that z is a position
-            # setpoint. Laterally it is not: zero velocity stops pushing, it
-            # does not hold a position, so the drone will drift with whatever
-            # bias PX4's velocity loop has - the same mechanism that sank it
-            # vertically, just slower and sideways. Fixing that means a
-            # position setpoint on x and y too, captured at the moment the
-            # marker was lost, and that is a real answer to the open question
-            # rather than a placeholder, so it waits for the decision.
             v_forward, v_left = 0.0, 0.0
+
+            # MARKER LOST: hold position, then land. Decided 1 Oct 2026.
+            #
+            # Any reason the node cannot command lands here, not only a lost
+            # marker - no heading or an unlevelled offset count too. Either way
+            # the drone is being flown by nothing, and the same answer fits.
+            #
+            # Outside Offboard PX4 ignores these setpoints, so the clock and the
+            # hold point are refreshed every tick there. That way the clock only
+            # runs while Offboard is actually engaged: flipping into Offboard
+            # with no marker in view holds where the drone is at that moment and
+            # lands lost_hover_s later, instead of landing at once because the
+            # marker had been missing for minutes of hand flying.
+            if self._lost_since_s is None or not in_offboard:
+                self._lost_since_s = now_s
+                self._hold_x_m, self._hold_y_m = self._x_m, self._y_m
+            elif self._hold_x_m is None:
+                # x, y were not valid when the marker went. Take them as soon
+                # as they are.
+                self._hold_x_m, self._hold_y_m = self._x_m, self._y_m
+
+            # A POSITION setpoint, because zero velocity only declines to push
+            # and the drone drifts with whatever bias PX4's velocity loop has -
+            # the same mechanism that sank it vertically. With no valid x, y
+            # there is nothing to hold, and zero velocity is the fallback.
+            if self._hold_x_m is not None:
+                hold = (self._hold_x_m, self._hold_y_m)
+
+            lost_for_s = now_s - self._lost_since_s
+            if in_offboard and lost_for_s >= self._lost_hover_s:
+                self._request_land(now_s, lost_for_s)
 
             # Integral reset, not freeze. Across a dropout the accumulator is a
             # wound spring pointing wherever it was last loaded, and unloading
@@ -676,8 +749,13 @@ class StationKeeper(Node):
         # the origin at speed on one axis and zero vertical velocity on the
         # other - the second of which is exactly the bug this replaces.
         z_sp = self._altitude_setpoint()
-        setpoint.position = [float('nan'), float('nan'), z_sp]
-        setpoint.velocity = [v_north, v_east, float('nan')]
+        if hold is not None:
+            # Marker lost: all three axes on position, nothing on velocity.
+            setpoint.position = [float(hold[0]), float(hold[1]), z_sp]
+            setpoint.velocity = [float('nan'), float('nan'), float('nan')]
+        else:
+            setpoint.position = [float('nan'), float('nan'), z_sp]
+            setpoint.velocity = [v_north, v_east, float('nan')]
 
         # Yaw left uncommanded. Nothing about the task needs a heading: the
         # marker's position is read in the body frame and rotated by whatever
@@ -833,6 +911,35 @@ class StationKeeper(Node):
         v_east = v_forward * sin_yaw + v_right * cos_yaw
 
         return v_north, v_east
+
+    def _request_land(self, now_s, lost_for_s):
+        """Ask PX4 to switch to Land mode. Resent once a second until it does.
+
+        The caller only gets here while PX4 is in Offboard, and the moment PX4
+        enters Land it is no longer in Offboard, so this stops by itself. The
+        pilot can still flip out of Land with the mode switch.
+        """
+        if (
+            self._last_land_request_s is not None
+            and now_s - self._last_land_request_s < 1.0
+        ):
+            return
+        self._last_land_request_s = now_s
+
+        cmd = VehicleCommand()
+        cmd.timestamp = self._px4_timestamp()
+        cmd.command = VehicleCommand.VEHICLE_CMD_NAV_LAND
+        cmd.target_system = 1
+        cmd.target_component = 1
+        cmd.source_system = 1
+        cmd.source_component = 1
+        cmd.from_external = True
+        self._command_pub.publish(cmd)
+
+        self.get_logger().warn(
+            'marker %d lost for %.1f s in Offboard - commanding Land'
+            % (self._target_marker_id, lost_for_s)
+        )
 
     def _px4_timestamp(self):
         """Now, in microseconds, on the clock PX4 is using."""
