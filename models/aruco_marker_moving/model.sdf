@@ -1,0 +1,87 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <model name="aruco_marker_moving">
+
+    <!-- The driveable twin of aruco_marker. Geometry, texture and size are
+         IDENTICAL on purpose: still DICT_4X4_50 id 0, still a 0.2667 m plate
+         carrying 0.200 m of actual marker. So marker_size_m does not change,
+         target_marker_id 0 still matches, and nothing in corvid_perception or
+         corvid_control can tell the difference. Only the model NAME differs,
+         which is what the cmd_vel topic is built from.
+
+         aruco_marker/ is untouched. Use that one for stationary tests. -->
+
+    <!-- NOT static, unlike its twin. VelocityControl writes LinearVelocityCmd
+         and AngularVelocityCmd on the model, and physics needs a body to apply
+         those to - a static model has none, so the commands would go nowhere.
+         This is also why set_pose silently did nothing on the static twin. -->
+    <static>false</static>
+
+    <link name="marker_link">
+
+      <!-- Non-static means physics owns it, and physics needs mass. Written out
+           explicitly rather than left to SDF's defaults so it is visible.
+           The numbers barely matter: VelocityControl sets velocity DIRECTLY
+           rather than applying forces, so nothing here has to be tuned. Kept
+           light and small anyway, in case something ever does push it. -->
+      <inertial>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>0.0003</ixx><iyy>0.0003</iyy><izz>0.0006</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+
+      <!-- Gravity off. Belt and braces: the velocity command already overwrites
+           the body's velocity every step, including vz, so it should not fall
+           anyway. But if the node stops, the bridge drops, or the plugin is
+           slow to bind, gravity-on would quietly drop the marker through a
+           floor it has no collision to land on. -->
+      <gravity>false</gravity>
+
+      <!-- Unchanged from the static twin, including WHY: a <plane> rather than
+           a <box> because Gazebo's plane primitive carries usable UV
+           coordinates and the box does not, so a texture on a box renders as
+           flat base colour. -->
+      <visual name="marker_visual">
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>0.2667 0.2667</size>
+          </plane>
+        </geometry>
+        <material>
+          <!-- White on purpose: it is the base colour the texture modulates.
+               Left out, the default is black, so a texture problem shows up as
+               an invisible black square instead of a visible white one. -->
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0.4 0.4 0.4 1</specular>
+          <pbr>
+            <metal>
+              <!-- Points inside THIS model's folder, not the twin's, so
+                   deleting either model cannot break the other. The texture is
+                   a byte-identical copy. -->
+              <albedo_map>model://aruco_marker_moving/materials/textures/aruco_4x4_id0.png</albedo_map>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+
+      <!-- Still no collision. A sheet of paper the drone might land on top of
+           should not be something the drone can catch on. -->
+
+    </link>
+
+    <!-- Sets the model's velocity directly - not forces, so no mass tuning and
+         no pushing. Physics integrates it at full rate.
+         The alternative, calling the set_pose service in a loop, is capped at
+         about 5-10 Hz: each call marks the pose a OneTimeChange, which makes
+         SceneBroadcaster republish the ENTIRE world state, and past ~10 Hz the
+         GUI stalls. See gz-sim issue 1403. -->
+    <plugin filename="gz-sim-velocity-control-system"
+            name="gz::sim::systems::VelocityControl">
+      <topic>/model/aruco_marker_moving/cmd_vel</topic>
+    </plugin>
+
+  </model>
+</sdf>
