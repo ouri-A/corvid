@@ -14,14 +14,14 @@
            because Gazebo's plane primitive carries usable UV coordinates; the
            box primitive does not, so a texture on a box renders as base colour.
 
-           0.2667 m square because the texture is 3/4 marker and 1/4 quiet zone:
-           0.2667 * 0.75 = 0.200 m of actual marker. 0.200 m is the number pose
-           estimation uses. -->
+           0.192 m square because the texture is 3/4 marker and 1/4 quiet zone:
+           0.192 * 0.75 = 0.144 m of actual marker. 0.144 m is the number pose
+           estimation uses. Sized so the printed sheet fits A4. -->
       <visual name="marker_visual">
         <geometry>
           <plane>
             <normal>0 0 1</normal>
-            <size>0.2667 0.2667</size>
+            <size>0.192 0.192</size>
           </plane>
         </geometry>
         <material>

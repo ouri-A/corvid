@@ -19,7 +19,7 @@ Sizes are chosen so the marker occupies exactly 3/4 of the image width:
     total      1120 px
 
 That 0.75 ratio is what ties this image to the geometry in model.sdf. The
-model's plate is 0.2667 m square so that the MARKER ITSELF is 0.200 m --
+model's plate is 0.192 m square so that the MARKER ITSELF is 0.144 m --
 the number that goes into pose estimation later. Change one, change the other.
 """
 

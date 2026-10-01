@@ -3,8 +3,8 @@
   <model name="aruco_marker_moving">
 
     <!-- The driveable twin of aruco_marker. Geometry, texture and size are
-         IDENTICAL on purpose: still DICT_4X4_50 id 0, still a 0.2667 m plate
-         carrying 0.200 m of actual marker. So marker_size_m does not change,
+         IDENTICAL on purpose: still DICT_4X4_50 id 0, still a 0.192 m plate
+         carrying 0.144 m of actual marker. So marker_size_m does not change,
          target_marker_id 0 still matches, and nothing in corvid_perception or
          corvid_control can tell the difference. Only the model NAME differs,
          which is what the cmd_vel topic is built from.
@@ -47,7 +47,7 @@
         <geometry>
           <plane>
             <normal>0 0 1</normal>
-            <size>0.2667 0.2667</size>
+            <size>0.192 0.192</size>
           </plane>
         </geometry>
         <material>

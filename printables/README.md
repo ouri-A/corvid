@@ -1,12 +1,13 @@
 # printables
 
-Two A3 sheets. One is the tag the drone tracks, the other is the target the
-camera is calibrated against.
+Two A4 sheets. One is the tag the drone tracks, the other is the target the
+camera is calibrated against. A4 is the constraint both sizes were chosen
+against: everything in this project has to print on a sheet anyone can get.
 
 | File | What it is |
 |---|---|
-| `aruco_4x4_id0_200mm.pdf` | DICT_4X4_50 id 0. Black marker 200 mm square, 266.7 mm including the white quiet zone |
-| `charuco_7x10_35mm.pdf` | ChArUco 7x10, DICT_5X5_100, 35 mm squares, 26.25 mm markers, 245 x 350 mm board |
+| `aruco_4x4_id0_144mm.pdf` | DICT_4X4_50 id 0. Black marker 144 mm square, 192 mm including the white quiet zone |
+| `charuco_7x10_24mm.pdf` | ChArUco 7x10, DICT_5X5_100, 24 mm squares, 18 mm markers, 168 x 240 mm board |
 | `make_printables.py` | Regenerates both. Host-side, `uv run printables/make_printables.py` from `corvid/` |
 
 ## Printing
@@ -37,7 +38,7 @@ that away. Measure a square with calipers and feed the measured number in anyway
 printed 1% small reports every range 1% short. At a 2 m hold height that is 2 cm,
 which is the entire error budget spent on a print dialog. Measure the black
 square edge to edge and put the MEASURED value into `marker_size_m`, rather than
-assuming 0.200.
+assuming 0.144.
 
 ## Mounting
 
@@ -81,8 +82,13 @@ fails on your laptop instead of on a printed sheet in the lab.
 
 ## What was verified, and how
 
-Not inferred -- the PDFs were rasterised back to images and the real detectors
-were run on them:
+**These figures are for the superseded A3 sheets and have not yet been repeated
+for A4.** Re-run `make_printables.py` and the numbers below get replaced; the
+generator's own re-detection check has to pass before it will write either PDF,
+so a run that completes is itself the first half of the verification.
+
+Measured on the A3 pair, 9 Sep, by rasterising the PDFs back to images and
+running the real detectors on them:
 
 - board: 54 of 54 interior corners found, square pitch 35.014 mm measured against
   35.000 nominal

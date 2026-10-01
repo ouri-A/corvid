@@ -123,7 +123,7 @@ class MarkerDetector(Node):
         # A parameter rather than a constant because the printed marker in
         # Stage 2 may not be exactly this size, and that difference belongs in
         # a launch file, not in an edit to this source on the drone.
-        self.declare_parameter('marker_size_m', 0.200)
+        self.declare_parameter('marker_size_m', 0.144)
         self._marker_size_m = (
             self.get_parameter('marker_size_m').get_parameter_value().double_value
         )

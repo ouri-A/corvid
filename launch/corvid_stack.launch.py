@@ -55,8 +55,8 @@ def _setup(context, *args, **kwargs):
     # must already be bridged or the node runs on a zero clock and hangs.
     #
     # marker_size_m is the MARKER, not the plate: the texture is 3/4 marker and
-    # 1/4 quiet zone, so the 0.2667 m plate carries 0.200 m of actual marker,
-    # and 0.200 is the number pose estimation needs. Getting this wrong scales
+    # 1/4 quiet zone, so the 0.192 m plate carries 0.144 m of actual marker,
+    # and 0.144 is the number pose estimation needs. Getting this wrong scales
     # range linearly and looks like a calibration problem.
     marker_detector = Node(
         package='corvid_perception',
@@ -118,7 +118,7 @@ def generate_launch_description():
         DeclareLaunchArgument('sensor', default_value='imager'),
 
         DeclareLaunchArgument(
-            'marker_size_m', default_value='0.200',
+            'marker_size_m', default_value='0.144',
             description='Marker side length in metres. The marker, not the plate.'),
         DeclareLaunchArgument(
             'target_marker_id', default_value='0',
