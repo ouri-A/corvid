@@ -1,0 +1,26 @@
+image_width: 1280
+image_height: 720
+camera_name: c200
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [1167.32708,    0.     ,  645.78719,
+            0.     , 1168.4825 ,  335.57699,
+            0.     ,    0.     ,    1.     ]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.163936, -0.230562, 0.000413, -0.001286, 0.462327]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1., 0., 0.,
+         0., 1., 0.,
+         0., 0., 1.]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [1091.75765,    0.     ,  644.86648,    0.     ,
+            0.     , 1147.32225,  334.75395,    0.     ,
+            0.     ,    0.     ,    1.     ,    0.     ]

@@ -17,4 +17,9 @@ RUN mkdir -p /opt/usb_cam_ws/src && cd /opt/usb_cam_ws/src \
  && colcon build --packages-select usb_cam --cmake-args -DBUILD_TESTING=OFF
 
 RUN echo 'source /opt/usb_cam_ws/install/local_setup.bash' >> /home/ubuntu/.bashrc
+
+# ROS camera calibrator (3.0.9): ChArUco target, writes the YAML usb_cam reads via camera_info_url
+RUN apt-get update && apt-get install -y --no-install-recommends ros-humble-camera-calibration \
+ && rm -rf /var/lib/apt/lists/*
+
 USER ubuntu
