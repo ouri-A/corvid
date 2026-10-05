@@ -37,7 +37,7 @@ import rclpy
 from corvid_msgs.msg import MarkerDetection, MarkerDetectionArray
 from cv_bridge import CvBridge, CvBridgeError
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
 
 
@@ -197,14 +197,30 @@ class MarkerDetector(Node):
         detector_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG
         self._detector = cv2.aruco.ArucoDetector(aruco_dict, detector_params)
 
-        # Sensor-data QoS: best effort, depth 1. A real camera driver publishes
-        # best effort, and a best-effort publisher cannot feed a reliable
-        # subscriber - so this is what works against both sim and hardware.
+        # Best effort, keep last, DEPTH 1. Best effort because a real camera
+        # driver publishes best effort, and a best-effort publisher cannot feed
+        # a reliable subscriber - so this works against both sim and hardware.
+        #
+        # Depth 1 is the important part. The stock qos_profile_sensor_data is
+        # KEEP_LAST with depth FIVE (rmw qos_profiles.h, Humble). While the
+        # detector keeps up with the camera that never matters; once it falls
+        # behind - the Orin manages ~6 Hz against a 30 Hz camera - up to five
+        # frames queue and every detection is made on a stale one. Measured
+        # 5 Oct on the Orin: detections already 0.37-0.49 s old on arrival,
+        # against 0.1 s on the laptop, enough to trip marker-lost constantly.
+        # Depth 1 drops the backlog: the next frame processed is always the
+        # newest.
+        image_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self._image_sub = self.create_subscription(
             Image,
             'image_raw',
             self._on_image,
-            qos_profile_sensor_data,
+            image_qos,
         )
 
         # Depth 1 and, by taking the plain int form, default reliable QoS.
