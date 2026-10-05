@@ -19,7 +19,8 @@ RUN mkdir -p /opt/usb_cam_ws/src && cd /opt/usb_cam_ws/src \
 RUN echo 'source /opt/usb_cam_ws/install/local_setup.bash' >> /home/ubuntu/.bashrc
 
 # ROS camera calibrator (3.0.9): ChArUco target, writes the YAML usb_cam reads via camera_info_url
-RUN apt-get update && apt-get install -y --no-install-recommends ros-humble-camera-calibration \
+# compressed-image-transport: gives usb_cam an /image_raw/compressed topic, so flights can bag JPEG frames
+RUN apt-get update && apt-get install -y --no-install-recommends ros-humble-camera-calibration ros-humble-compressed-image-transport \
  && rm -rf /var/lib/apt/lists/*
 
 USER ubuntu

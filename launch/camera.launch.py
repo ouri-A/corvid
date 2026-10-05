@@ -5,7 +5,7 @@ Needs the corvid:dev image (patched usb_cam) and the container started with
 --camera, which puts the C200 at /dev/video0 inside.
 
   ros2 launch src/corvid/launch/camera.launch.py
-  ros2 launch src/corvid/launch/camera.launch.py camera_info_url:=file:///path/to/c200.yaml
+  ros2 launch src/corvid/launch/camera.launch.py camera_info_url:=file:///path/to/other.yaml
 """
 
 from launch import LaunchDescription
@@ -71,7 +71,9 @@ def generate_launch_description():
             description='Path INSIDE the container. The launcher maps the C200 here.'),
         DeclareLaunchArgument('frame_id', default_value='camera_optical',
             description='Stamped into image and camera_info headers.'),
-        DeclareLaunchArgument('camera_info_url', default_value='',
-            description='file:// URL of the calibration YAML. Empty until calibrated.'),
+        DeclareLaunchArgument('camera_info_url',
+            default_value='file:///home/ubuntu/roscon-25-workshop_ws/src/corvid/config/c200.yaml',
+            description='file:// URL of the calibration YAML. Defaults to the C200 calibration '
+                        'as seen inside the container.'),
         OpaqueFunction(function=_setup),
     ])
