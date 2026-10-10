@@ -69,7 +69,7 @@ tmux send-keys -t "${SESSION}:agent" \
 tmux send-keys -t "${SESSION}:camera" \
     "source install/setup.bash && ros2 launch src/corvid/launch/camera.launch.py"
 tmux send-keys -t "${SESSION}:stack" \
-    "source install/setup.bash && ros2 launch src/corvid/launch/real_stack.launch.py target_height_m:=1.5"
+    "source install/setup.bash && ros2 launch src/corvid/launch/real_stack.launch.py target_height_m:=1.5 marker_timeout_s:=1.0"
 tmux send-keys -t "${SESSION}:bag" \
     "source install/setup.bash && ros2 bag record -o ${WS}/src/corvid/bags/${BAG} /station_keeper_status /marker_detections /image_raw/compressed /camera_info /fmu/out/vehicle_local_position /fmu/out/vehicle_attitude /fmu/out/vehicle_status_v1 /fmu/in/trajectory_setpoint /fmu/in/offboard_control_mode /fmu/in/vehicle_command"
 
