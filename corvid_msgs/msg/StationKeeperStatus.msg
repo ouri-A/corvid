@@ -64,6 +64,20 @@ float32 pitch_deg
 # Positive means the attitude sample is older than the image. NaN if none.
 float32 attitude_age_s
 
+# Latency compensation. The offsets above are what the camera saw at the
+# instant the picture was taken; by the time a tick acts on them the drone has
+# moved. When compensated is true, PX4's own record of how far it moved since
+# that picture was subtracted, and comp_*_m is exactly what that changed, in the
+# body frame as it is NOW. The controller's error was offset + comp.
+#
+# compensated is false when the feature is switched off, when no PX4 position
+# was within 50 ms of the image, when x/y were invalid, or when PX4 reset its
+# position estimate in between - and then comp_*_m is NaN and the raw offset
+# was flown, exactly as before this existed.
+bool compensated
+float32 comp_forward_m
+float32 comp_left_m
+
 # The proportional and integral contributions, separately, in m/s. Split so a
 # flight flown with a nonzero ki can be read without re-deriving which part of
 # the command came from where. Both are post-clamp for the integral term and
