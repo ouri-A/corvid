@@ -2,3 +2,4 @@ bags/
 __pycache__/
 *.pyc
 printables/*.pdf
+.pio/
