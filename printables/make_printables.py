@@ -8,10 +8,14 @@ Run from the corvid/ folder on the HOST (not in the container):
 
     uv run printables/make_printables.py
 
-Two sheets come out, both A4, both at true metric scale:
+Six sheets come out, all A4, all at true metric scale:
 
-    aruco_4x4_id0_144mm.pdf     the tag the drone tracks
-    charuco_7x10_24mm.pdf       the target the camera is calibrated against
+    aruco_4x4_id0_144mm.pdf       the tag the drone tracks (central bot)
+    charuco_7x10_24mm.pdf         the target the camera is calibrated against
+    aruco_4x4_id1_100mm.pdf       Stage 3 swarm bot 1
+    aruco_4x4_id2_100mm.pdf       Stage 3 swarm bot 2
+    aruco_4x4_id3_100mm.pdf       Stage 3 surround target
+    aruco_size_test_60_80mm.pdf   id 1 at 60 mm and 80 mm, for the marker-size test
 
 WHY THE PATTERNS ARE RENDERED BY OPENCV AND NOT DRAWN HERE
 ----------------------------------------------------------
@@ -100,6 +104,19 @@ BOARD_SQUARE_MM = 24.0
 BOARD_MARKER_MM = 18.0
 BOARD_PX_PER_SQUARE = 560        # 560/24*18 = 420 px marker = 60 px per bit
 
+# --- Stage 3 swarm tags ----------------------------------------------------
+# Same dictionary as the tracking tag, so one detection pass finds every marker
+# in the frame. id 0 stays the central bot; 1 and 2 are the swarm bots, 3 the
+# surround target. 100 mm is the provisional swarm size (11 px per cell at 1.7 m
+# on the C200); the size-test sheet carries 60 and 80 mm so the props-off test
+# can settle it against the 100 mm sheets.
+SWARM_IDS = (1, 2, 3)
+SWARM_ROLES = {1: "swarm bot 1", 2: "swarm bot 2", 3: "surround target"}
+SWARM_SIDE_MM = 100.0
+SIZE_TEST_ID = 1
+SIZE_TEST_SIDES_MM = (80.0, 60.0)
+SWARM_PX_PER_CELL = 400          # 400 * 6 = 2400 px for 100 mm, ~610 dpi
+
 OUT_DIR = Path(__file__).resolve().parent
 
 
@@ -176,6 +193,87 @@ def make_tag(tmp_dir: Path) -> Path:
     return out
 
 
+def _render_marker(marker_id: int) -> np.ndarray:
+    """Render a DICT_4X4_50 tag with a one-cell quiet zone, and re-detect it.
+
+    Pixel size only sets print resolution; the physical size is applied when the
+    image is placed on the page, so one render serves every printed size.
+    """
+    d = cv2.aruco.getPredefinedDictionary(TAG_DICT)
+    marker_px = SWARM_PX_PER_CELL * TAG_GRID_CELLS
+    pad_px = SWARM_PX_PER_CELL * TAG_QUIET_CELLS
+    marker = cv2.aruco.generateImageMarker(d, marker_id, marker_px)
+    total_px = marker_px + 2 * pad_px
+    img = np.full((total_px, total_px), 255, dtype=np.uint8)
+    img[pad_px:pad_px + marker_px, pad_px:pad_px + marker_px] = marker
+
+    params = cv2.aruco.DetectorParameters()
+    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG
+    _, ids, _ = cv2.aruco.ArucoDetector(d, params).detectMarkers(img)
+    if ids is None or list(ids.flatten()) != [marker_id]:
+        raise SystemExit("FAIL: rendered tag does not detect as id %d alone" % marker_id)
+    return img
+
+
+def make_swarm_tag(tmp_dir: Path, marker_id: int) -> Path:
+    img = _render_marker(marker_id)
+    quiet_mm = SWARM_SIDE_MM / TAG_GRID_CELLS
+    total_mm = SWARM_SIDE_MM + 2 * quiet_mm
+
+    out = OUT_DIR / ("aruco_4x4_id%d_%dmm.pdf" % (marker_id, SWARM_SIDE_MM))
+    c = pdfcanvas.Canvas(str(out), pagesize=A4)
+    page_h_mm = A4[1] / mm
+    y = (page_h_mm - total_mm) / 2.0 + 12.0
+    _place(c, img, total_mm, total_mm, y, tmp_dir / ("swarm%d.png" % marker_id))
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawCentredString(A4[0] / 2.0, (y + total_mm + 10.0) * mm,
+                        "corvid %s - DICT_4X4_50 id %d"
+                        % (SWARM_ROLES[marker_id], marker_id))
+    c.setFont("Helvetica", 8.5)
+    c.drawCentredString(A4[0] / 2.0, (y + total_mm + 4.0) * mm,
+                        "PRINT AT 100%% - NOT 'fit to page'.  Black marker %.0f mm square, "
+                        "%.1f mm including the white quiet zone." % (SWARM_SIDE_MM, total_mm))
+    c.setFont("Helvetica", 8)
+    c.drawCentredString(A4[0] / 2.0, (y - 8.0) * mm,
+                        "Measure the BLACK SQUARE, edge to edge. Trim no closer than "
+                        "the outer edge of the white border.")
+    _draw_ruler(c, (A4[0] / mm - 100.0) / 2.0, y - 20.0)
+    c.showPage()
+    c.save()
+    return out
+
+
+def make_size_test(tmp_dir: Path) -> Path:
+    img = _render_marker(SIZE_TEST_ID)
+    out = OUT_DIR / "aruco_size_test_60_80mm.pdf"
+    c = pdfcanvas.Canvas(str(out), pagesize=A4)
+    page_h_mm = A4[1] / mm
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawCentredString(A4[0] / 2.0, (page_h_mm - 14.0) * mm,
+                        "corvid marker-size test - DICT_4X4_50 id %d at 80 mm and 60 mm"
+                        % SIZE_TEST_ID)
+    c.setFont("Helvetica", 8.5)
+    c.drawCentredString(A4[0] / 2.0, (page_h_mm - 20.0) * mm,
+                        "PRINT AT 100%. Cut the two apart along their white borders; "
+                        "use the 100 mm id 1 sheet as the third size.")
+
+    y_top = page_h_mm - 28.0
+    for side in SIZE_TEST_SIDES_MM:
+        total = side * (TAG_GRID_CELLS + 2 * TAG_QUIET_CELLS) / TAG_GRID_CELLS
+        y = y_top - total
+        _place(c, img, total, total, y, tmp_dir / ("size%d.png" % side))
+        c.setFont("Helvetica", 8)
+        c.drawCentredString(A4[0] / 2.0, (y - 4.0) * mm,
+                            "black marker %.0f mm, %.1f mm with quiet zone" % (side, total))
+        y_top = y - 12.0
+    _draw_ruler(c, (A4[0] / mm - 100.0) / 2.0, 16.0)
+    c.showPage()
+    c.save()
+    return out
+
+
 def make_board(tmp_dir: Path) -> Path:
     d = cv2.aruco.getPredefinedDictionary(BOARD_DICT)
     board = cv2.aruco.CharucoBoard(
@@ -233,6 +331,13 @@ def main() -> None:
         print("  OK  board detects all %d interior corners"
               % ((BOARD_COLS - 1) * (BOARD_ROWS - 1)))
         print("      wrote %s" % board.name)
+        for marker_id in SWARM_IDS:
+            sheet = make_swarm_tag(tmp, marker_id)
+            print("  OK  swarm tag detects as DICT_4X4_50 id %d" % marker_id)
+            print("      wrote %s" % sheet.name)
+        test = make_size_test(tmp)
+        print("  OK  size-test tag detects as DICT_4X4_50 id %d" % SIZE_TEST_ID)
+        print("      wrote %s" % test.name)
 
 
 if __name__ == "__main__":
