@@ -31,10 +31,10 @@ rcl_allocator_t allocator;
 rclc_support_t support;
 rcl_node_t node;
 rcl_subscription_t sub_cmd_vel, sub_turn, sub_drive;
-rcl_publisher_t pub_state;
+rcl_publisher_t pub_state, pub_heading;
 rclc_executor_t executor;
 geometry_msgs__msg__Twist cmd_vel_msg;
-std_msgs__msg__Float32 turn_msg, drive_msg;
+std_msgs__msg__Float32 turn_msg, drive_msg, heading_msg;
 std_msgs__msg__UInt8 state_msg;
 char ns[8];
 uint32_t last_cmd_ms = 0;
@@ -160,11 +160,13 @@ void on_turn(const void *msgin) {
 }
 
 void on_drive(const void *msgin) {
+  float v = ((const std_msgs__msg__Float32 *)msgin)->data;   // m/s, negative = reverse
+  if (v == 0.0f) { stop_all(); return; }                  // 0.0 = stop NOW: turn, drive or teleop, state -> 0
   if (mode == TURNING) return;                            // ignored until the turn finishes
   if (mode != DRIVING || manual) drive_ref = heading;     // fresh heading for a new drive
   manual = false;
   mode = DRIVING;
-  drive_speed = ((const std_msgs__msg__Float32 *)msgin)->data;   // m/s, negative = reverse
+  drive_speed = v;
   last_drive_ms = millis();
 }
 
@@ -182,6 +184,8 @@ bool create_entities() {
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "drive") != RCL_RET_OK) return false;
   if (rclc_publisher_init_best_effort(&pub_state, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8), "state") != RCL_RET_OK) return false;
+  if (rclc_publisher_init_best_effort(&pub_heading, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32), "heading") != RCL_RET_OK) return false;
   executor = rclc_executor_get_zero_initialized_executor();
   if (rclc_executor_init(&executor, &support.context, 3, &allocator) != RCL_RET_OK) return false;
   if (rclc_executor_add_subscription(&executor, &sub_cmd_vel, &cmd_vel_msg, &on_cmd_vel, ON_NEW_DATA) != RCL_RET_OK) return false;
@@ -194,6 +198,7 @@ void destroy_entities() {
   rmw_context_t *ctx = rcl_context_get_rmw_context(&support.context);
   (void)rmw_uros_set_context_entity_destroy_session_timeout(ctx, 0);
   rcl_publisher_fini(&pub_state, &node);
+  rcl_publisher_fini(&pub_heading, &node);
   rcl_subscription_fini(&sub_cmd_vel, &node);
   rcl_subscription_fini(&sub_turn, &node);
   rcl_subscription_fini(&sub_drive, &node);
@@ -229,7 +234,10 @@ void loop() {
       EVERY_MS(1000, state = (rmw_uros_ping_agent(100, 3) == RMW_RET_OK) ? AGENT_CONNECTED : AGENT_DISCONNECTED);
       if (state == AGENT_CONNECTED) {
         rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10));
-        EVERY_MS(100, { state_msg.data = mode; (void)rcl_publish(&pub_state, &state_msg, NULL); });
+        EVERY_MS(100, {
+          state_msg.data = mode;       (void)rcl_publish(&pub_state, &state_msg, NULL);
+          heading_msg.data = heading;  (void)rcl_publish(&pub_heading, &heading_msg, NULL);   // for the bag only
+        });
       }
       break;
     case AGENT_DISCONNECTED:
