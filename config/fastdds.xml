@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fast DDS profile for corvid. Load it by setting, in every shell, before starting a node:
+    export FASTRTPS_DEFAULT_PROFILES_FILE=<path to this file>
+
+  Why: Fast DDS moves data between processes on one machine through shared memory, and the
+  default shared-memory segment is 512 KiB. A camera frame is bigger (640x480 RGB = 0.9 MB,
+  1280x720 RGB = 2.7 MB), and best-effort subscribers (the calibrator, marker_detector,
+  ros2 topic hz) then lose most frames. 15 Oct 2026, VX-500 at 8 fps, hz saw <1 Hz while
+  a reliable bag recorder got 109/109 frames. 16 MB holds many frames.
+  UDPv4 stays on: discovery and anything off this machine need it.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>shm_big</transport_id>
+      <type>SHM</type>
+      <segment_size>16777216</segment_size>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>udp</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="big_shm" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>shm_big</transport_id>
+        <transport_id>udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

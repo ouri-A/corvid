@@ -1,0 +1,26 @@
+image_width: 640
+image_height: 480
+camera_name: vx500
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [754.11260,   0.     , 356.89200,
+           0.     , 758.30043, 272.95692,
+           0.     ,   0.     ,   1.     ]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.190819, -0.654960, -0.001441, 0.003986, 0.000000]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1., 0., 0.,
+         0., 1., 0.,
+         0., 0., 1.]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [762.16644,   0.     , 359.13681,   0.     ,
+           0.     , 770.26718, 272.68754,   0.     ,
+           0.     ,   0.     ,   1.     ,   0.     ]
