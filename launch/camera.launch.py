@@ -6,6 +6,14 @@ Needs the corvid:dev image (patched usb_cam) and the container started with
 
   ros2 launch src/corvid/launch/camera.launch.py
   ros2 launch src/corvid/launch/camera.launch.py camera_info_url:=file:///path/to/other.yaml
+
+Every argument defaults to the C200, so the drone's command never changes. The
+Microsoft LifeCam VX-500 (stand-in for swarm work at home, 640x480 YUYV only, and
+no exposure_dynamic_framerate control) is started with:
+
+  ros2 launch src/corvid/launch/camera.launch.py image_width:=640 image_height:=480 \
+      pixel_format:=yuyv2rgb camera_name:=vx500 v4l2_controls:=power_line_frequency=1 \
+      camera_info_url:=file:///home/ubuntu/roscon-25-workshop_ws/src/corvid/config/vx500.yaml
 """
 
 from launch import LaunchDescription
@@ -21,15 +29,15 @@ def _setup(context, *args, **kwargs):
         return LaunchConfiguration(name).perform(context)
 
     device = arg('video_device')
+    controls = arg('v4l2_controls')
 
-    # Two controls usb_cam has no parameter for. Set them the same way usb_cam
-    # sets its own -- v4l2-ctl -- before the node opens the device. Both proven
-    # 1 Oct to survive usb_cam opening it.
+    # Controls usb_cam has no parameter for. Set them the same way usb_cam
+    # sets its own -- v4l2-ctl -- before the node opens the device. The C200
+    # defaults were proven 1 Oct to survive usb_cam opening it.
     #   power_line_frequency=1        50 Hz mains, no banding under lab lights
     #   exposure_dynamic_framerate=0  camera may not drop fps in dim light
     v4l2 = ExecuteProcess(
-        cmd=['v4l2-ctl', '-d', device,
-             '-c', 'power_line_frequency=1,exposure_dynamic_framerate=0'],
+        cmd=['v4l2-ctl', '-d', device, '-c', controls],
         output='screen',
     )
 
@@ -39,19 +47,22 @@ def _setup(context, *args, **kwargs):
         name='camera',
         parameters=[{
             'video_device': device,
-            # 720p30 exists only as MJPEG on this camera (USB 2.0)
-            'pixel_format': 'mjpeg2rgb',
-            'image_width': 1280,
-            'image_height': 720,
-            'framerate': 30.0,
+            'pixel_format': arg('pixel_format'),
+            'image_width': int(arg('image_width')),
+            'image_height': int(arg('image_height')),
+            'framerate': float(arg('framerate')),
             # usb_cam defaults this to 50 and pushes it onto the camera
             'brightness': 0,
-            'camera_name': 'c200',
+            'camera_name': arg('camera_name'),
             'frame_id': arg('frame_id'),
             'camera_info_url': arg('camera_info_url'),
         }],
         output='screen',
     )
+
+    # No controls asked for: nothing to set, start the camera straight away.
+    if not controls:
+        return [camera]
 
     # Start the camera only if v4l2-ctl succeeded. Otherwise stop everything,
     # so a camera running with the wrong settings never looks like a good run.
@@ -75,5 +86,16 @@ def generate_launch_description():
             default_value='file:///home/ubuntu/roscon-25-workshop_ws/src/corvid/config/c200.yaml',
             description='file:// URL of the calibration YAML. Defaults to the C200 calibration '
                         'as seen inside the container.'),
+        # 720p30 exists only as MJPEG on the C200 (USB 2.0)
+        DeclareLaunchArgument('pixel_format', default_value='mjpeg2rgb',
+            description='usb_cam pixel_format. yuyv2rgb for the VX-500.'),
+        DeclareLaunchArgument('image_width', default_value='1280'),
+        DeclareLaunchArgument('image_height', default_value='720'),
+        DeclareLaunchArgument('framerate', default_value='30.0'),
+        DeclareLaunchArgument('camera_name', default_value='c200',
+            description='Must match camera_name in the calibration YAML.'),
+        DeclareLaunchArgument('v4l2_controls',
+            default_value='power_line_frequency=1,exposure_dynamic_framerate=0',
+            description='Passed to v4l2-ctl -c before the camera starts. Empty to skip.'),
         OpaqueFunction(function=_setup),
     ])

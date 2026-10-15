@@ -513,7 +513,9 @@ class MarkerDetector(Node):
     PROJECTED_COLOUR = (0, 0, 255)
     TEXT_COLOUR = (0, 255, 255)
 
-    # Widest the magnified inset is allowed to get, in output pixels.
+    # Widest the magnified inset is allowed to get, in output pixels, on a
+    # 1280-wide frame. Scaled with the frame width, so it covers the same share
+    # of the picture on any camera (200 px on the VX-500's 640x480).
     INSET_MAX_PX = 400
 
     def _publish_debug_image(self, msg, gray, annotations):
@@ -553,7 +555,8 @@ class MarkerDetector(Node):
             if x1 - x0 >= 2 and y1 - y0 >= 2:
                 # Integer zoom, so every source pixel becomes an exact square
                 # block and the grid reads cleanly.
-                zoom = max(1, min(8, self.INSET_MAX_PX // max(x1 - x0, y1 - y0)))
+                inset_max = self.INSET_MAX_PX * width // 1280
+                zoom = max(1, min(8, inset_max // max(x1 - x0, y1 - y0)))
 
                 # Cropped from the CLEAN image, not from the annotated one -
                 # upscaling lines already drawn at full size would thicken them
