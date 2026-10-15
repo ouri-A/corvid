@@ -166,6 +166,24 @@ ATTITUDE_MATCH_TOLERANCE_S = 0.05
 # buffer.
 ATTITUDE_BUFFER_LEN = 128
 
+# Local position samples kept, for latency compensation. PX4 publishes
+# vehicle_local_position at ~95 Hz on the real drone (hover_4: 91,518 messages
+# in 957 s), so this is about 2.7 s - more than the longest marker_timeout_s a
+# flight has used (1.0 s), so an accepted detection is always inside it.
+POSITION_BUFFER_LEN = 256
+
+# Same reasoning and the same number as the attitude match: beyond 50 ms we do
+# not know where the drone was when the picture was taken.
+POSITION_MATCH_TOLERANCE_S = 0.05
+
+# The most latency compensation is ever allowed to shift the offset by, metres.
+# At the 0.3 m/s speed clamp and a 1.0 s marker timeout the drone moves about
+# 0.3 m between picture and tick at most - the largest seen replaying hover_4 was
+# 0.33 m, on a 1.0 s-old detection with the drone briefly over 0.3 m/s. Anything
+# past 0.5 m is an estimator jump the reset counter did not catch, and the raw
+# offset is the safer thing to fly.
+MAX_COMPENSATION_M = 0.5
+
 
 def yaw_from_quaternion(w, x, y, z):
     """Yaw about the down axis, radians, from a body-FRD-to-NED quaternion."""
@@ -340,6 +358,27 @@ class StationKeeper(Node):
         # law a fine, regular dt.
         self.declare_parameter('setpoint_rate_hz', 50.0)
 
+        # Latency compensation, OFF by default so a flight only uses it when it
+        # is asked for by name.
+        #
+        # The marker offset describes where the marker was when the picture was
+        # taken - 0.22 to 0.46 s before the tick that acts on it on the real
+        # drone (hover_4). If the drone moved in between, the offset is stale by
+        # exactly that movement, and a controller acting on it keeps pushing
+        # after it has arrived. That is the overshoot. With this on, each tick
+        # subtracts how far PX4 says the drone moved since that picture.
+        #
+        # PX4's position drifts over seconds on optical flow, so it is never
+        # asked where the drone IS - only how far it moved in the last fraction
+        # of a second, which it gets right to a few centimetres. The camera
+        # still says where the marker is.
+        #
+        # The window is not a constant. Each detection carries its image stamp,
+        # so the correction covers whatever the delay actually was for that
+        # picture. It is only as good as that stamp, which is why the apt
+        # usb_cam (stamps early by a random 0-999 ms) must never be used.
+        self.declare_parameter('latency_compensation', False)
+
         self._target_marker_id = self.get_parameter('target_marker_id').value
         self._target_height_m = self.get_parameter('target_height_m').value
         self._kp = self.get_parameter('kp').value
@@ -349,6 +388,9 @@ class StationKeeper(Node):
         self._marker_timeout_s = self.get_parameter('marker_timeout_s').value
         self._lost_hover_s = self.get_parameter('lost_hover_s').value
         setpoint_rate_hz = self.get_parameter('setpoint_rate_hz').value
+        self._latency_compensation = bool(
+            self.get_parameter('latency_compensation').value
+        )
 
         # Latest marker offset in the body frame, and the time it was measured.
         # None means nothing has been seen yet, which is a different state from
@@ -380,6 +422,24 @@ class StationKeeper(Node):
         # uXRCE-DDS link with none of the image pipeline's latency in front of
         # it, so the two are directly comparable.
         self._attitude_buffer = deque(maxlen=ATTITUDE_BUFFER_LEN)
+
+        # Local position history, oldest first, as
+        # (receive_time_s, x, y, heading, xy_reset_counter). Receive time for
+        # exactly the reason given for the attitude buffer above. Only samples
+        # with xy_valid are kept.
+        self._position_buffer = deque(maxlen=POSITION_BUFFER_LEN)
+
+        # PX4's xy_reset_counter on the newest local position. It increments
+        # whenever the estimator jumps its x/y; a picture taken before a jump
+        # and a tick after it cannot be compared, so compensation skips them.
+        self._xy_reset_counter = None
+
+        # The stored offset turned into north/east at the heading the drone had
+        # WHEN THE PICTURE WAS TAKEN, plus where PX4 said the drone was then.
+        # None if the latest detection could not be matched to a position.
+        self._offset_north_m = None
+        self._offset_east_m = None
+        self._offset_pose = None
 
         # Integral accumulators, in metre-seconds. Separate per axis.
         self._integral_forward = 0.0
@@ -527,6 +587,12 @@ class StationKeeper(Node):
             )
         )
 
+        self.get_logger().info(
+            'latency compensation %s'
+            % ('ON - offsets moved forward by PX4\'s own motion since each '
+               'picture' if self._latency_compensation else 'OFF')
+        )
+
         if self._ki != 0.0:
             self.get_logger().warn(
                 'integral term is ENABLED (ki %.3f). Watch for overshoot and '
@@ -551,6 +617,18 @@ class StationKeeper(Node):
             self._x_m, self._y_m = msg.x, msg.y
         else:
             self._x_m = self._y_m = None
+
+        self._xy_reset_counter = int(msg.xy_reset_counter)
+        if msg.xy_valid:
+            self._position_buffer.append(
+                (
+                    self.get_clock().now().nanoseconds * 1e-9,
+                    float(msg.x),
+                    float(msg.y),
+                    float(msg.heading),
+                    int(msg.xy_reset_counter),
+                )
+            )
 
         # Logged, never acted on. See the note where it is stored.
         self._dist_bottom_m = msg.dist_bottom if msg.dist_bottom_valid else None
@@ -585,6 +663,15 @@ class StationKeeper(Node):
         # than the measurement noise.
         nearest = min(self._attitude_buffer, key=lambda s: abs(s[0] - stamp_s))
         if abs(nearest[0] - stamp_s) > ATTITUDE_MATCH_TOLERANCE_S:
+            return None
+        return nearest
+
+    def _position_at(self, stamp_s):
+        """The local position sample nearest stamp_s, or None if none is close enough."""
+        if not self._position_buffer:
+            return None
+        nearest = min(self._position_buffer, key=lambda s: abs(s[0] - stamp_s))
+        if abs(nearest[0] - stamp_s) > POSITION_MATCH_TOLERANCE_S:
             return None
         return nearest
 
@@ -636,6 +723,23 @@ class StationKeeper(Node):
             self._offset_forward_m = forward
             self._offset_left_m = left
             self._offset_stamp_s = stamp_s
+
+            # For latency compensation: where PX4 said the drone was when this
+            # picture was taken, and the offset in north/east at THAT moment's
+            # heading. Stored even with the feature off, so switching it on is
+            # a parameter and not a different code path.
+            pose = self._position_at(stamp_s)
+            if pose is None:
+                self._offset_pose = None
+                self._offset_north_m = self._offset_east_m = None
+            else:
+                _, _, _, heading_then, _ = pose
+                right = -left
+                cos_h = math.cos(heading_then)
+                sin_h = math.sin(heading_then)
+                self._offset_north_m = forward * cos_h - right * sin_h
+                self._offset_east_m = forward * sin_h + right * cos_h
+                self._offset_pose = pose
             return
 
     def _marker_age_s(self):
@@ -687,13 +791,18 @@ class StationKeeper(Node):
         hold = None
 
         if can_command:
-            v_forward, v_left, p_fwd, p_left, i_fwd, i_left = self._lateral_command()
+            (
+                v_forward, v_left, p_fwd, p_left, i_fwd, i_left,
+                compensated, comp_fwd, comp_left,
+            ) = self._lateral_command()
             self._lost_since_s = None
             self._hold_x_m = self._hold_y_m = None
             self._last_land_request_s = None
         else:
             p_fwd = p_left = i_fwd = i_left = 0.0
             v_forward, v_left = 0.0, 0.0
+            compensated = False
+            comp_fwd = comp_left = float('nan')
 
             # MARKER LOST: hold position, then land. Decided 1 Oct 2026.
             #
@@ -773,11 +882,13 @@ class StationKeeper(Node):
             have_marker, can_command, age_s,
             p_fwd, p_left, i_fwd, i_left,
             v_forward, v_left, v_north, v_east, z_sp,
+            compensated, comp_fwd, comp_left,
         )
 
     def _publish_status(self, have_marker, can_command, age_s,
                         p_fwd, p_left, i_fwd, i_left,
-                        v_forward, v_left, v_north, v_east, z_sp):
+                        v_forward, v_left, v_north, v_east, z_sp,
+                        compensated, comp_fwd, comp_left):
         """Record what this tick decided, so nobody has to reconstruct it."""
         nan = float('nan')
         s = StationKeeperStatus()
@@ -834,26 +945,84 @@ class StationKeeper(Node):
             else float(self._offset_attitude_age_s)
         )
 
+        s.compensated = bool(compensated)
+        s.comp_forward_m = float(comp_fwd)
+        s.comp_left_m = float(comp_left)
+
         s.heading_rad = nan if self._heading_rad is None else float(self._heading_rad)
         s.z_m = nan if self._z_m is None else float(self._z_m)
         s.altitude_setpoint_m = float(z_sp)
 
         self._status_pub.publish(s)
 
+    def _compensated_offset(self):
+        """The marker offset as it is NOW, in the body frame.
+
+        Returns (forward, left, compensated, comp_forward, comp_left). When
+        compensation cannot be applied for any reason this returns the stored
+        offset unchanged with compensated False and the comp terms NaN, which
+        is exactly how the node flew before compensation existed.
+        """
+        nan = float('nan')
+        raw = (self._offset_forward_m, self._offset_left_m, False, nan, nan)
+
+        if not self._latency_compensation:
+            return raw
+        if (
+            self._offset_pose is None
+            or self._x_m is None
+            or self._heading_rad is None
+        ):
+            return raw
+
+        _, x_then, y_then, _, reset_then = self._offset_pose
+        if reset_then != self._xy_reset_counter:
+            return raw
+
+        # How far PX4 says the drone moved since the picture.
+        moved_north = self._x_m - x_then
+        moved_east = self._y_m - y_then
+        if math.hypot(moved_north, moved_east) > MAX_COMPENSATION_M:
+            return raw
+
+        # The marker has not moved; the drone has. So the offset to it shrinks
+        # by exactly the drone's movement.
+        north = self._offset_north_m - moved_north
+        east = self._offset_east_m - moved_east
+
+        # Back into the body frame at the heading the drone has NOW, so
+        # everything downstream - gains, clamp, the rotation into NED - is
+        # untouched. Inverse of the rotation in _on_detections.
+        cos_h = math.cos(self._heading_rad)
+        sin_h = math.sin(self._heading_rad)
+        forward = north * cos_h + east * sin_h
+        right = -north * sin_h + east * cos_h
+        left = -right
+
+        return (
+            forward,
+            left,
+            True,
+            forward - self._offset_forward_m,
+            left - self._offset_left_m,
+        )
+
     def _lateral_command(self):
         """Lateral command from the stored marker offset.
 
-        Returns (v_forward, v_left, p_forward, p_left, i_forward, i_left), all
-        m/s. The four extra terms are not used to fly - they exist so the
-        status message can record which part of the command came from which
-        term without anyone recomputing it from the gains afterwards.
+        Returns (v_forward, v_left, p_forward, p_left, i_forward, i_left,
+        compensated, comp_forward, comp_left). Velocities in m/s, comp terms in
+        metres. Everything after the first two is not used to fly - it exists
+        so the status message can record what each part of the decision was
+        without anyone recomputing it from the gains afterwards.
         """
         # The offset IS the error. The marker sitting 0.4 m forward means the
         # drone is 0.4 m behind where it should be, so the command points
         # straight at it and no sign flip is needed. (ARK computes drone minus
         # tag and negates the result, which is the same thing said twice.)
-        error_forward = self._offset_forward_m
-        error_left = self._offset_left_m
+        error_forward, error_left, compensated, comp_forward, comp_left = (
+            self._compensated_offset()
+        )
 
         # Integrating on the timer's fixed dt, not on the camera interval. Real
         # elapsed time either way, but a regular one, so the term does not
@@ -881,7 +1050,10 @@ class StationKeeper(Node):
             v_forward *= scale
             v_left *= scale
 
-        return v_forward, v_left, p_forward, p_left, i_forward, i_left
+        return (
+            v_forward, v_left, p_forward, p_left, i_forward, i_left,
+            compensated, comp_forward, comp_left,
+        )
 
     def _altitude_setpoint(self):
         """NED z to hold, in metres. Negative is above the takeoff point."""

@@ -102,6 +102,7 @@ def _setup(context, *args, **kwargs):
             'max_velocity_mps': float(arg('max_velocity_mps')),
             'marker_timeout_s': float(arg('marker_timeout_s')),
             'setpoint_rate_hz': float(arg('setpoint_rate_hz')),
+            'latency_compensation': arg('latency_compensation').lower() in ('true', '1'),
         }],
         output='screen',
     )
@@ -146,5 +147,9 @@ def generate_launch_description():
             'setpoint_rate_hz', default_value='50.0',
             description='Fixed-rate setpoint timer. PX4 drops Offboard below 2 Hz, '
                         'which is why this is never driven by the camera callback.'),
+        DeclareLaunchArgument(
+            'latency_compensation', default_value='false',
+            description='Subtract PX4\'s own motion since each picture from the '
+                        'marker offset. Off unless asked for: true to switch on.'),
         OpaqueFunction(function=_setup),
     ])
