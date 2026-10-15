@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MarkerDetection.msg"
   "msg/MarkerDetectionArray.msg"
   "msg/StationKeeperStatus.msg"
+  "msg/CoordinatorStatus.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )
 

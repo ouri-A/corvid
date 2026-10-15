@@ -20,8 +20,9 @@ const float HALF_TRACK = 0.07;   // m, half the wheel spacing, a GUESS
 const uint32_t WATCHDOG_MS = 500;
 
 const uint8_t MPU = 0x68;
-const float TURN_PWM = 0.7;              // top spin speed for turns, a GUESS
+const float TURN_PWM = 0.55;             // top spin speed for turns (0.7 until 15 Oct evening), a GUESS
 const float TURN_PWM_MIN = 0.45;         // slowest spin near the target; below stall the turn stops short, a GUESS
+const float DRIVE_PWM_MIN = 0.45;        // slowest drive power; 0.1 m/s / V_MAX = 14% stalled the TT motors (15 Oct)
 const float K_TURN = 1.5;                // spin speed per rad still to go, a GUESS
 const float TURN_SCALE = 0.87;           // commanded angle x this; 15 Oct video: ~13 deg over per 90 deg turn
 const float K_HEADING = 1.0;             // drive correction per rad of heading error, a GUESS
@@ -63,7 +64,7 @@ void set_wheel(int fwd, int rev, float u) {
   else        { analogWrite(fwd, 0); analogWrite(rev, pwm); }
 }
 
-const float RAMP_STEP = 0.05;    // max PWM change per 10 ms tick: 0 to full in ~0.2 s
+const float RAMP_STEP = 0.01;    // max PWM change per 10 ms tick: 0 to full in ~1 s (gentler start, 15 Oct)
 float tgt_l = 0, tgt_r = 0, cur_l = 0, cur_r = 0;
 
 float ramp(float cur, float tgt) {
@@ -134,6 +135,8 @@ void control() {
     if (now - last_drive_ms > WATCHDOG_MS) stop_all();
     else {
       float base = drive_speed / V_MAX;
+      if (base > 0 && base < DRIVE_PWM_MIN) base = DRIVE_PWM_MIN;        // below this the wheels never start
+      if (base < 0 && base > -DRIVE_PWM_MIN) base = -DRIVE_PWM_MIN;
       float corr = K_HEADING * (drive_ref - heading);     // drifted left -> corr < 0 -> steer right
       tgt_l = base - corr;  tgt_r = base + corr;
     }
