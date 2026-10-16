@@ -32,6 +32,12 @@ Clocks. A detection's age is this node's clock minus the image's stamp, so the
 node must run on the machine whose clock stamped the image - true at home, where
 camera, detector and coordinator share the laptop. If they are ever split across
 machines (laptop and Orin), the clocks need syncing first or the stop point is off.
+In the lab the detector runs on the Orin and this node on the laptop, and the two
+clocks are not synced. arrival_latency_s covers that: when it is >= 0, every
+image stamp is ignored and each detection is taken as having been seen that long
+before it ARRIVED here, which keeps every comparison on this node's own clock.
+0.3 s is the drone's measured detection age (hover_4). Off (-1) by default, so
+nothing changes at home.
 """
 
 import collections
@@ -234,6 +240,10 @@ class Coordinator(Node):
         # Act only on detections at least this old. 0 at home normally; 0.3
         # rehearses the drone's measured detection age.
         self._extra_delay = param('extra_delay_s', 0.0)
+        # >= 0: ignore image stamps, take each detection as seen this long
+        # before it arrived (camera on another machine, clocks not synced).
+        # -1: use the image stamps (home, one machine).
+        self._arrival_latency = param('arrival_latency_s', -1.0)
         # After the bot reports idle, ignore frames younger than this, so a
         # measurement never comes from a picture of the bot still moving.
         self._settle_s = param('settle_s', 0.2)
@@ -327,6 +337,10 @@ class Coordinator(Node):
             % (self._offset_forward, self._offset_left,
                ' (NOT MEASURED - run the spin test)'
                if self._offset_forward == 0.0 and self._offset_left == 0.0 else ''))
+        if self._arrival_latency >= 0.0:
+            self.get_logger().info(
+                'CLOCKS: image stamps ignored; each detection taken as %.2f s old on arrival '
+                '(arrival_latency_s)' % self._arrival_latency)
 
     # ---------- small helpers ----------
 
@@ -442,8 +456,13 @@ class Coordinator(Node):
     # ---------- callbacks ----------
 
     def _on_detections(self, msg):
-        self._frames.append((stamp_seconds(msg.header.stamp), msg))
-        self._last_frame_arrival = self._now()
+        now = self._now()
+        if self._arrival_latency >= 0.0:
+            stamp = now - self._arrival_latency
+        else:
+            stamp = stamp_seconds(msg.header.stamp)
+        self._frames.append((stamp, msg))
+        self._last_frame_arrival = now
 
     def _on_state(self, msg):
         now = self._now()

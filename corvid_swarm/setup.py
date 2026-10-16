@@ -24,7 +24,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'coordinator = corvid_swarm.coordinator:main'
+            'coordinator = corvid_swarm.coordinator:main',
+            'pilot = corvid_swarm.pilot:main',
         ],
     },
 )
