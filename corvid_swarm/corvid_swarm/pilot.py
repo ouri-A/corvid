@@ -10,8 +10,9 @@ here depends on holding a key down):
     a / d     turn left / right by turn_step_deg (15)
     q / e     turn left / right by big_turn_deg (90)
     space     stop everything - the bot, a search, the coordinator
-    g         go: drive straight until the target is in view, stop, then hand
-              the bot to the coordinator
+    g         go: search in a square - drive one leg straight, stop, turn
+              left 90 deg, repeat for 4 legs (back to the start) - until the
+              target is in view, then stop and hand the bot to the coordinator
     c         hand the bot to the coordinator now (target already in view)
     m         take the bot back from the coordinator (any w a s d q e does too)
     h         print these keys
@@ -24,7 +25,7 @@ on its gyro heading. No cmd_vel, so no arcs.
 
 Modes, shown at the start of the status line:
     MANUAL        the keys drive the bot
-    SEARCHING     driving straight, watching for the target
+    SEARCHING     driving the square, watching for the target
     HANDING OVER  stopped, waiting for the bot to settle, calling /coordinator/start
     AUTO          the coordinator has the bot; the pilot sends nothing
 A run that ends (arrived or gave up) drops back to MANUAL by itself.
@@ -66,7 +67,7 @@ HELP = """keys:
   w / s   straight forward / back (until space or another key)
   a / d   turn left / right {step:.0f} deg       q / e   turn left / right {big:.0f} deg
   space   stop everything
-  g       go straight until the target is seen, then hand over to the coordinator
+  g       search in a square until the target is seen, then hand over
   c       hand over to the coordinator now     m   take the bot back
   h       these keys                           x   quit"""
 
@@ -111,7 +112,7 @@ class Keyboard:
 
 
 class Pilot(Node):
-    """Keyboard driving for one bot, a straight-line search, and the hand-over."""
+    """Keyboard driving for one bot, a square search, and the hand-over."""
 
     def __init__(self, keyboard=None):
         super().__init__('pilot')
@@ -141,7 +142,12 @@ class Pilot(Node):
         self._confirm_frames = param('search_confirm_frames', 3)
         self._extra_s = param('search_extra_s', 1.0)
         self._stop_distance = param('search_stop_distance_m', 0.30)
-        self._search_timeout = param('search_timeout_s', 30.0)
+        # The square: search_legs legs of search_leg_s each, a turn of
+        # search_turn_deg (+ = left) between legs. 4 legs of 8 s at 0.1 m/s is
+        # a ~0.8 m square that ends where it started.
+        self._leg_s = param('search_leg_s', 8.0)
+        self._legs = param('search_legs', 4)
+        self._search_turn = math.radians(param('search_turn_deg', 90.0))
         self._tag_lost_s = param('tag_lost_s', 0.5)
         self._state_timeout = param('state_timeout_s', 1.0)
 
@@ -158,6 +164,10 @@ class Pilot(Node):
                 raise ValueError('%s must be > 0, got %r' % (name, value))
         if self._confirm_frames < 1:
             raise ValueError('search_confirm_frames must be >= 1')
+        if not self._leg_s > 0.0:
+            raise ValueError('search_leg_s must be > 0, got %r' % self._leg_s)
+        if self._legs < 1:
+            raise ValueError('search_legs must be >= 1')
 
         self._bot_name = 'bot%d' % self._bot_id
         ns = '/' + self._bot_name
@@ -198,6 +208,10 @@ class Pilot(Node):
         self._distance = None        # bot tag to target tag, m, last frame with both
 
         self._search_started = None
+        self._leg = 0                # 0-based leg of the square
+        self._leg_phase = None       # 'drive', 'stopping', 'turning'
+        self._leg_started = None
+        self._leg_stop_at = None
         self._confirmed_at = None
         self._stop_at = None
         self._start_called_at = None
@@ -396,9 +410,14 @@ class Pilot(Node):
             return
         self._mode = SEARCHING
         self._search_started = now
+        self._leg = 0
+        self._leg_phase = 'drive'
+        self._leg_started = now
         self._confirmed_at = None
-        self._event('info', 'SEARCHING - straight ahead until target id %d is seen (up to %.0f s)'
-                    % (self._target_marker_id, self._search_timeout))
+        self._event('info', 'SEARCHING - square, %d legs of %.0f s, turning %+.0f deg between, '
+                    'until target id %d is seen'
+                    % (self._legs, self._leg_s, math.degrees(self._search_turn),
+                       self._target_marker_id))
 
     def _start_handover_now(self, now):
         if self._mode != MANUAL:
@@ -505,7 +524,8 @@ class Pilot(Node):
             self._seen_busy = False
 
     def _search_tick(self, now):
-        self._stream(now, 1)
+        if self._leg_phase == 'drive':
+            self._stream(now, 1)
         why = None
         if self._frame_time is None or now - self._frame_time > self._tag_lost_s:
             why = 'detections stopped arriving'
@@ -514,10 +534,23 @@ class Pilot(Node):
                 self._bot_name, self._bot_marker_id, self._tag_lost_s)
         elif not self._state_fresh(now):
             why = 'lost /%s/state' % self._bot_name
-        elif now - self._search_started > self._search_timeout:
-            why = 'target not found in %.0f s' % self._search_timeout
         if why:
             self._to_manual('warn', 'search stopped: ' + why)
+            return
+
+        if self._leg_phase != 'drive':
+            self._search_between_legs(now)
+            return
+
+        if (self._confirmed_at is None and self._both_run < self._confirm_frames
+                and now - self._leg_started >= self._leg_s):
+            if self._leg + 1 >= self._legs:
+                self._to_manual('warn', 'search stopped: target not found in the square (%d legs)'
+                                % self._legs)
+                return
+            self._send_stop()
+            self._leg_phase = 'stopping'
+            self._leg_stop_at = now
             return
 
         if self._confirmed_at is None and self._both_run >= self._confirm_frames:
@@ -529,6 +562,42 @@ class Pilot(Node):
         if close or (self._confirmed_at is not None and now - self._confirmed_at >= self._extra_s):
             self._event('info', 'stopping %.2f m from the target, handing over' % self._distance)
             self._begin_handover(now)
+
+    def _search_between_legs(self, now):
+        """Stopped between two legs: wait for idle, turn, wait for the turn, next leg."""
+        seen = self._both_run >= self._confirm_frames
+        if self._leg_phase == 'stopping':
+            if seen:
+                self._event('info', 'target in view while stopping, handing over')
+                self._begin_handover(now)
+                return
+            idle = (self._bot_state == BOT_IDLE and self._bot_state_time is not None
+                    and self._bot_state_time > self._leg_stop_at + 0.05)
+            # Wait out the stop burst and 0.4 s more: a stop arriving after the
+            # turn would cancel the turn (same rule as the turn keys).
+            if idle and self._stop_burst == 0 and now - self._leg_stop_at >= 0.4:
+                if self._turn_pub.get_subscription_count() == 0:
+                    self._event('warn', '/%s/turn has no subscriber - the turn may be lost'
+                                % self._bot_name)
+                self._turn_pub.publish(Float32(data=float(self._search_turn)))
+                self._turn_busy = True
+                self._turn_sent_at = now
+                self._seen_busy = False
+                self._leg_phase = 'turning'
+            elif now - self._leg_stop_at > self._handover_timeout:
+                self._to_manual('warn', 'search stopped: %s did not report idle after a leg'
+                                % self._bot_name)
+        elif self._leg_phase == 'turning':
+            if self._turn_busy:
+                return
+            if seen:
+                self._event('info', 'target in view after the turn, handing over')
+                self._begin_handover(now)
+                return
+            self._leg += 1
+            self._leg_phase = 'drive'
+            self._leg_started = now
+            self._event('info', 'search leg %d of %d' % (self._leg + 1, self._legs))
 
     def _handover_tick(self, now):
         if self._start_called_at is None:
@@ -571,6 +640,8 @@ class Pilot(Node):
                 mode += ' fwd' if self._latch > 0 else ' back'
             elif self._turn_busy or self._turns:
                 mode += ' turn' + (' (%d queued)' % len(self._turns) if self._turns else '')
+        elif mode == SEARCHING:
+            mode += ' leg %d/%d %s' % (self._leg + 1, self._legs, self._leg_phase)
         if self._state_fresh(now):
             bot = STATE_NAMES.get(self._bot_state, str(self._bot_state))
         else:
