@@ -217,6 +217,7 @@ void setup() {
   snprintf(ns, sizeof ns, "bot%d", BOT_ID);
   char ssid[] = WIFI_SSID, pass[] = WIFI_PASS;
   Serial.println("joining wifi...");
+  WiFi.config(IPAddress(NET_PREFIX, BOT_IP_BASE + BOT_ID), IPAddress(NET_PREFIX, 1), IPAddress(255, 255, 255, 0));  // fixed address; gateway unused, the agent is on this subnet
   set_microros_wifi_transports(ssid, pass, IPAddress(AGENT_IP), AGENT_PORT);
   WiFi.setSleep(false);   // modem sleep delays incoming packets past our 100 ms ping timeout
   Serial.printf("wifi up, ip %s\n", WiFi.localIP().toString().c_str());
