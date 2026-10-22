@@ -217,8 +217,12 @@ void setup() {
   snprintf(ns, sizeof ns, "bot%d", BOT_ID);
   char ssid[] = WIFI_SSID, pass[] = WIFI_PASS;
   Serial.println("joining wifi...");
-  WiFi.config(IPAddress(NET_PREFIX, BOT_IP_BASE + BOT_ID), IPAddress(NET_PREFIX, 1), IPAddress(255, 255, 255, 0));  // fixed address; gateway unused, the agent is on this subnet
-  set_microros_wifi_transports(ssid, pass, IPAddress(AGENT_IP), AGENT_PORT);
+  WiFi.begin(ssid, pass);
+  while (WiFi.status() != WL_CONNECTED) delay(500);   // DHCP join, only to learn the phone's subnet (it changes every hotspot start)
+  IPAddress got = WiFi.localIP(), gw = WiFi.gatewayIP(), mask = WiFi.subnetMask();
+  WiFi.disconnect();
+  WiFi.config(IPAddress(got[0], got[1], got[2], BOT_IP_BASE + BOT_ID), gw, mask);   // fixed .61 + BOT_ID on that subnet
+  set_microros_wifi_transports(ssid, pass, IPAddress(got[0], got[1], got[2], AGENT_HOST), AGENT_PORT);
   WiFi.setSleep(false);   // modem sleep delays incoming packets past our 100 ms ping timeout
   Serial.printf("wifi up, ip %s\n", WiFi.localIP().toString().c_str());
   state = WAITING_AGENT;
