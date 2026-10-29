@@ -13,9 +13,9 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='ubuntu',
-    maintainer_email='ubuntu@todo.todo',
-    description='TODO: Package description',
+    maintainer='Anshul Kumar Paliwal',
+    maintainer_email='ouri200425@gmail.com',
+    description='Gazebo marker mover for tracking tests',
     license='MIT',
     extras_require={
         'test': [

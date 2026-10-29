@@ -13,10 +13,10 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='ubuntu',
-    maintainer_email='ubuntu@todo.todo',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    maintainer='Anshul Kumar Paliwal',
+    maintainer_email='ouri200425@gmail.com',
+    description='Coordinator and keyboard pilot for camera-guided ground robots',
+    license='MIT',
     extras_require={
         'test': [
             'pytest',

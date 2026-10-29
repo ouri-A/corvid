@@ -3,9 +3,9 @@
 <package format="3">
   <name>corvid_swarm</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="ubuntu@todo.todo">ubuntu</maintainer>
-  <license>TODO: License declaration</license>
+  <description>Coordinator and keyboard pilot for camera-guided ground robots</description>
+  <maintainer email="ouri200425@gmail.com">Anshul Kumar Paliwal</maintainer>
+  <license>MIT</license>
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>

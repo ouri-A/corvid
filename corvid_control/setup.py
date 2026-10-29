@@ -13,10 +13,10 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='ubuntu',
-    maintainer_email='ubuntu@todo.todo',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    maintainer='Anshul Kumar Paliwal',
+    maintainer_email='ouri200425@gmail.com',
+    description='Holds a PX4 drone over an ArUco marker with Offboard velocity setpoints',
+    license='MIT',
     extras_require={
         'test': [
             'pytest',

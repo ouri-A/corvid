@@ -3,8 +3,8 @@
 <package format="3">
   <name>corvid_sim</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="ubuntu@todo.todo">ubuntu</maintainer>
+  <description>Gazebo marker mover for tracking tests</description>
+  <maintainer email="ouri200425@gmail.com">Anshul Kumar Paliwal</maintainer>
   <license>MIT</license>
 
   <exec_depend>rclpy</exec_depend>

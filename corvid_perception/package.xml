@@ -3,9 +3,9 @@
 <package format="3">
   <name>corvid_perception</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="ubuntu@todo.todo">ubuntu</maintainer>
-  <license>TODO: License declaration</license>
+  <description>ArUco marker detection and metric pose from a downward camera</description>
+  <maintainer email="ouri200425@gmail.com">Anshul Kumar Paliwal</maintainer>
+  <license>MIT</license>
 
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>

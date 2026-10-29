@@ -13,10 +13,10 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='ubuntu',
-    maintainer_email='ubuntu@todo.todo',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    maintainer='Anshul Kumar Paliwal',
+    maintainer_email='ouri200425@gmail.com',
+    description='ArUco marker detection and metric pose from a downward camera',
+    license='MIT',
     extras_require={
         'test': [
             'pytest',

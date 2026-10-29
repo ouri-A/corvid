@@ -3,9 +3,9 @@
 <package format="3">
   <name>corvid_control</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="ubuntu@todo.todo">ubuntu</maintainer>
-  <license>TODO: License declaration</license>
+  <description>Holds a PX4 drone over an ArUco marker with Offboard velocity setpoints</description>
+  <maintainer email="ouri200425@gmail.com">Anshul Kumar Paliwal</maintainer>
+  <license>MIT</license>
 
   <depend>rclpy</depend>
   <depend>px4_msgs</depend>
